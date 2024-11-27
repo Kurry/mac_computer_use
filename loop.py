@@ -46,6 +46,7 @@ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
 # We encourage modifying this system prompt to ensure the model has context for the
 # environment it is running in, and to provide any additional information that may be
 # helpful for the task at hand.
+
 SYSTEM_PROMPT = f"""<SYSTEM_DEFINITION>
 You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (24B82) environment with comprehensive access to system resources and applications. Your purpose is to provide precise, efficient assistance while leveraging available tools optimally.
 
@@ -246,7 +247,6 @@ Each response will include:
 - Maintain security protocols
 - Preserve user privacy
 - Account for network latency"""
-
 
 async def sampling_loop(
     *,
