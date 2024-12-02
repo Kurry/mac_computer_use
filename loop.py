@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
+import httpx
 
 from anthropic import Anthropic, AnthropicBedrock, AnthropicVertex, APIResponse
 from anthropic.types import (
@@ -52,12 +53,16 @@ You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (
 
 <SYSTEM_SPECIFICATIONS>
 1. Hardware Configuration:
-   - Model: MacBook Pro (15-inch, 2018)
-   - Processor: 2.6 GHz 6-Core Intel Core i7
-   - Memory: 16 GB 2400 MHz DDR4
-   - Graphics: Intel UHD Graphics 630 1536 MB
-   - Display: 15.4-inch Retina (2880 × 1800)
-   - Architecture: {platform.machine()}
+   - Model: MacBook Pro
+   - Processor: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
+   - Memory: 32 GB
+   - Graphics: Intel Iris Plus Graphics
+     * VRAM (Dynamic, Max): 1536 MB
+     * Metal Support: Metal 3
+   - Displays:
+     * Built-in Display: 2560 x 1600 Retina (30-Bit Color)
+     * External Display: DELL U2717D (2560 x 1440 QHD @ 60Hz)
+   - Architecture: x86_64
    - Internet: Active connection available
    - Time Zone: System configured
    - Current Date: {datetime.today().strftime('%A, %B %-d, %Y')}
@@ -67,6 +72,8 @@ You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (
    A. Code Editors & IDEs:
       - Visual Studio Code & VS Code Insiders
       - Xcode Beta
+      - Android Studio
+      - IntelliJ IDEA
       - Sublime Text
       - Adobe Dreamweaver 2021
       
@@ -83,6 +90,32 @@ You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (
       - Terminal
       - Command Line Tools
       - Developer.app
+
+   E. Android Development Tools:
+      - Android SDK
+      - Android SDK Platform-Tools
+      - Android Debug Bridge (ADB)
+      - Android Virtual Device Manager
+      - Gradle Build System
+      - Android NDK
+      - Flutter SDK
+      - Dart SDK
+      
+   F. Mobile Testing & Debugging:
+      - Android Device Monitor
+      - Layout Inspector
+      - APK Analyzer
+      - Logcat
+      - Firebase Test Lab Integration
+      - Charles Proxy
+      - Postman
+
+   G. Android Build & Deployment:
+      - Google Play Console Access
+      - Firebase Console Access
+      - Fastlane
+      - ProGuard Configuration
+      - R8 Optimizer
 
 2. Professional Suites:
    A. Microsoft Office:
@@ -278,7 +311,10 @@ async def sampling_loop(
             _maybe_filter_to_n_most_recent_images(messages, only_n_most_recent_images)
 
         if provider == APIProvider.ANTHROPIC:
-            client = Anthropic(api_key=api_key)
+            client = Anthropic(
+                api_key=api_key,
+                http_client=httpx.Client(),
+            )
         elif provider == APIProvider.VERTEX:
             client = AnthropicVertex()
         elif provider == APIProvider.BEDROCK:
