@@ -15,7 +15,7 @@ import json
 
 from anthropic import APIResponse
 from anthropic.types import Message
-from anthropic.types.beta import BetaMessage, BetaToolUseBlock
+from anthropic.types.beta import BetaMessage, BetaToolUseBlock, BetaTextBlock
 from anthropic.types.tool_use_block import ToolUseBlock
 from dotenv import load_dotenv
 
@@ -278,7 +278,7 @@ async def main():
         if auth_error := validate_auth(
             st.session_state.provider, st.session_state.api_key
         ):
-            st.warning(f"Please resolve the following auth issue:\n\n{auth_error}")
+            st.warning(f"Please resolve the following auth issue:\\n\\n{auth_error}")
             return
         else:
             st.session_state.auth_validated = True
@@ -306,7 +306,7 @@ async def main():
                         else:
                             _render_message(
                                 message["role"],
-                                cast(Any, block),
+                                block,
                             )
 
             # render past http exchanges
@@ -463,7 +463,7 @@ def _render_api_response(
     """Render an API response to a streamlit tab"""
     with tab:
         with st.expander(f"Request/Response ({response_id})"):
-            newline = "\n\n"
+            newline = "\\n\\n"
             st.markdown(
                 f"`{response.http_request.method} {response.http_request.url}`{newline}{newline.join(f'`{k}: {v}`' for k, v in response.http_request.headers.items())}"
             )
@@ -476,21 +476,24 @@ def _render_api_response(
 
 def _render_message(
     sender: Sender,
-    message: str | dict | BetaToolUseBlock | ToolResult,
+    message: str | dict | BetaToolUseBlock | ToolResult | BetaTextBlock,
 ):
     """Convert input from the user or output from the agent to a streamlit message."""
+    if not message:
+        return
+
     is_tool_result = not isinstance(message, str) and (
         isinstance(message, ToolResult)
         or message.__class__.__name__ == "ToolResult"
         or message.__class__.__name__ == "CLIResult"
     )
-    if not message or (
-        is_tool_result
+
+    if (is_tool_result
         and st.session_state.hide_images
         and not hasattr(message, "error")
-        and not hasattr(message, "output")
-    ):
+        and not hasattr(message, "output")):
         return
+
     with st.chat_message(sender):
         if is_tool_result:
             message = cast(ToolResult, message)
@@ -503,12 +506,24 @@ def _render_message(
                 st.error(message.error)
             if message.base64_image and not st.session_state.hide_images:
                 st.image(base64.b64decode(message.base64_image))
-        elif isinstance(message, dict) and message.get("type") == "text":
-            st.write(message.get("text", ""))
         elif isinstance(message, BetaToolUseBlock) or isinstance(message, ToolUseBlock):
             st.code(f"Tool Use: {message.name}\nInput: {message.input}")
+        elif isinstance(message, dict):
+            if message.get("type") == "text":
+                st.markdown(message.get("text", ""))
+            elif message.get("type") == "tool_use":
+                st.code(f"Tool Use: {message.get('name')}\nInput: {json.dumps(message.get('parameters', {}), indent=2)}")
+            else:
+                # Extract text content from BetaTextBlock or other message types
+                text_content = message.get("text", "")
+                if text_content:
+                    st.markdown(text_content)
+                else:
+                    st.markdown(str(message))
+        elif isinstance(message, BetaTextBlock):
+            st.markdown(message.text)
         else:
-            st.markdown(message)
+            st.markdown(str(message))
 
 
 if __name__ == "__main__":
