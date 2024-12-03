@@ -100,6 +100,19 @@ You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (
       - Android NDK
       - Flutter SDK
       - Dart SDK
+      Android Testing Commands:
+        - Unit Test Commands:
+        * ./gradlew testDebugUnitTest --parallel (Run debug unit tests in parallel)
+        * ./gradlew test[BuildVariant]UnitTest (e.g., testReleaseUnitTest)
+        * ./gradlew testDebugUnitTest --tests '*.TestClassName' (Run specific test class)
+        * ./gradlew testDebugUnitTest --tests '*.TestClassName.testMethodName' (Run specific test method)
+
+        - Instrumented Test Commands:
+        * adb shell am instrument -w <package>/androidx.test.runner.AndroidJUnitRunner
+        * Common -e options with instrument command:
+            - class: -e class com.example.TestClass (Run specific test class)
+            - method: -e class com.example.TestClass#testMethod (Run specific test method)
+            - package: -e package com.example.package (Run all tests in package)
       
    F. Mobile Testing & Debugging:
       - Android Device Monitor
