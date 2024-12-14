@@ -51,7 +51,17 @@ API_KEY_FILE = CONFIG_DIR / "api_key"
 # Custom CSS for styling and animations
 STREAMLIT_STYLE = """
 <style>
-    /* Hide chat input while agent loop is running */
+    /* Reduce top padding */
+    .stApp > header {
+        height: 0px !important;
+    }
+    
+    .main .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 1rem !important;
+    }
+
+    /* Existing styles */
     .stApp[data-teststate=running] .stChatInput textarea,
     .stApp[data-test-script-state=running] .stChatInput textarea {
         display: none;
@@ -220,19 +230,6 @@ async def main():
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
 
     st.title("Claude Computer Use for Mac")
-
-    # User controls toggle button (only visible to users)
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        st.button("Toggle Controls (⌘ + Space)", on_click=toggle_controls)
-        if st.session_state.controls_enabled:
-            st.success("Controls Enabled")
-        else:
-            st.error("Controls Disabled")
-
-    st.markdown(
-        """This is from [Mac Computer Use](https://github.com/deedy/mac_computer_use), a fork of [Anthropic Computer Use](https://github.com/anthropics/anthropic-quickstarts/blob/main/computer-use-demo/README.md) to work natively on Mac."""
-    )
 
     with st.sidebar:
 
@@ -511,7 +508,6 @@ def _render_message(
         if message.error:
             log_tool_result(sender, type(message).__name__, error=message.error)
         elif message.output and not message.base64_image:
-            output = message.output[:50] + "..." if len(message.output) > 50 else message.output
             log_tool_result(sender, type(message).__name__, output=message.output)
         else:
             log_tool_result(sender, type(message).__name__)
