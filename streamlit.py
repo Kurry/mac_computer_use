@@ -22,7 +22,13 @@ from streamlit.components.v1 import html
 from streamlit.delta_generator import DeltaGenerator
 from anthropic import APIResponse
 from anthropic.types import Message
-from anthropic.types.beta import BetaMessage, BetaToolUseBlock, BetaTextBlock
+from anthropic.types.beta import (
+    BetaMessage, 
+    BetaToolUseBlock, 
+    BetaTextBlock,
+    BetaTextBlockParam,
+    BetaToolResultBlockParam,
+)
 from anthropic.types.tool_use_block import ToolUseBlock
 from dotenv import load_dotenv
 
