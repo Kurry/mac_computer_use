@@ -38,6 +38,7 @@ from loop import (
     sampling_loop,
 )
 from tools import ToolResult
+from logger import logger, log_tool_use, log_tool_result, log_message
 
 load_dotenv()
 
@@ -214,10 +215,6 @@ def toggle_controls():
 async def main():
     """Render loop for streamlit"""
     setup_state()
-
-    # Add cleanup calls at start of each loop
-    _cleanup_old_responses(st.session_state.responses)
-    _cleanup_old_messages()
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
 
@@ -505,20 +502,20 @@ def _render_message(
     message: str | dict | BetaToolUseBlock | ToolResult | BetaTextBlock,
 ):
     """Convert input from the user or output from the agent to a streamlit message."""
-    # Print debug info
+    # Log messages but remove print statements
     if isinstance(message, dict) and message.get("type") == "tool_use" and message.get("name") == "bash":
         cmd = message.get("input", {}).get("command", "")
-        print(f"DEBUG: {sender} | bash | {cmd}")
+        log_tool_use(sender, "bash", cmd)
     elif isinstance(message, ToolResult):
         if message.error:
-            print(f"DEBUG: {sender} | {type(message).__name__} | error: {message.error}")
-        elif message.output and not message.base64_image:  # Skip image outputs
+            log_tool_result(sender, type(message).__name__, error=message.error)
+        elif message.output and not message.base64_image:
             output = message.output[:50] + "..." if len(message.output) > 50 else message.output
-            print(f"DEBUG: {sender} | {type(message).__name__} | output: {output}")
+            log_tool_result(sender, type(message).__name__, output=message.output)
         else:
-            print(f"DEBUG: {sender} | {type(message).__name__}")
+            log_tool_result(sender, type(message).__name__)
     else:
-        print(f"DEBUG: {sender} | {type(message).__name__}")
+        log_message(sender, type(message).__name__)
 
     if not message:
         return
@@ -535,14 +532,9 @@ def _render_message(
             message = cast(ToolResult, message)
             if message.output:
                 if message.__class__.__name__ == "CLIResult":
-                    # Truncate long CLI output
-                    MAX_CLI_OUTPUT = 1000  # Characters
-                    output = message.output
-                    if len(output) > MAX_CLI_OUTPUT:
-                        truncated = output[:MAX_CLI_OUTPUT] + f"\n... (truncated, {len(output)} chars total)"
-                        st.code(truncated)
-                    else:
-                        st.code(output)
+                    # Truncate long CLI output to first line
+                    output = message.output.split('\n')[0] + "..." if '\n' in message.output else message.output
+                    st.code(output)
                 else:
                     st.markdown(message.output)
             if message.error:
@@ -553,10 +545,8 @@ def _render_message(
                 except Exception:
                     st.error("Failed to load image")
         elif isinstance(message, BetaToolUseBlock) or isinstance(message, ToolUseBlock):
-            print(f"  tool use - name: {message.name}, input: {message.input}")
             st.code(f"Tool Use: {message.name}\nInput: {message.input}")
         elif isinstance(message, dict):
-            print(f"  dict message - type: {message.get('type')}")
             if message.get("type") == "text":
                 text = message.get("text", "")
                 if "<thinking>" in text and "</thinking>" in text:
@@ -612,10 +602,8 @@ def _render_message(
                 else:
                     st.markdown(str(message))
         elif isinstance(message, BetaTextBlock):
-            print(f"  text block - text: {message.text}")
             st.markdown(message.text)
         else:
-            print(f"  other message type")
             st.markdown(str(message))
 
 
@@ -667,21 +655,20 @@ MAX_STORED_RESPONSES = 50  # Limit number of stored responses
 
 def _cleanup_old_responses(response_state: dict):
     """Remove old responses if we have too many stored"""
-    before_count = len(response_state)
     if len(response_state) > MAX_STORED_RESPONSES:
         sorted_keys = sorted(response_state.keys())
         for key in sorted_keys[:-MAX_STORED_RESPONSES]:
             del response_state[key]
-        print(f"Cleaned up responses: {before_count} -> {len(response_state)}")
+        logger.debug(f"Cleaned up responses from {before_count} to {len(response_state)}")
 
 
 MAX_MESSAGES = 100
 
 def _cleanup_old_messages():
-    before_count = len(st.session_state.messages)
     if len(st.session_state.messages) > MAX_MESSAGES:
+        before_count = len(st.session_state.messages)
         st.session_state.messages = st.session_state.messages[-MAX_MESSAGES:]
-        print(f"Cleaned up messages: {before_count} -> {len(st.session_state.messages)}")
+        logger.debug(f"Cleaned up messages from {before_count} to {len(st.session_state.messages)}")
 
 
 if __name__ == "__main__":

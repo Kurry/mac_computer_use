@@ -13,6 +13,7 @@ from anthropic.types.beta import BetaToolComputerUse20241022Param
 
 from .base import BaseAnthropicTool, ToolError, ToolResult
 from .run import run
+from logger import logger, log_tool_use, log_tool_result, log_message
 
 # Constants
 OUTPUT_DIR = "/tmp/outputs"
@@ -183,7 +184,7 @@ class ComputerTool(BaseAnthropicTool):
         self.display_num = None
 
         if IS_CODESPACE:
-            print("Running in codespace environment - some features may be limited")
+            logger.warning("Running in codespace environment - some features may be limited")
 
     async def __call__(
         self,
@@ -193,10 +194,15 @@ class ComputerTool(BaseAnthropicTool):
         coordinate: tuple[int, int] | None = None,
         **kwargs,
     ):
-        print(f"\nDEBUG ComputerTool:")
-        print(f"  action: {action}")
-        print(f"  text: {text}")
-        print(f"  coordinate: {coordinate}")
+        logger.debug(
+            "",
+            extra={
+                'event_type': 'TOOL_USE',
+                'sender': 'computer',
+                'tool_name': 'computer',
+                'command': f"action={action} text={text} coordinate={coordinate}"
+            }
+        )
 
         if IS_CODESPACE:
             return ToolResult(
