@@ -253,7 +253,16 @@ class ComputerTool(BaseAnthropicTool):
             elif action == "type":
                 if not text:
                     raise ToolError("Text required for type action")
-                return await self.shell(f'cliclick w:{TYPING_DELAY_MS} t:{shlex.quote(text)}')
+                results: list[ToolResult] = []
+                for chunk in chunks(text, TYPING_GROUP_SIZE):
+                    cmd = f"cliclick w:{TYPING_DELAY_MS} t:{shlex.quote(chunk)}"
+                    results.append(await self.shell(cmd, take_screenshot=False))
+                screenshot_base64 = (await self.screenshot()).base64_image
+                return ToolResult(
+                    output="".join(result.output or "" for result in results),
+                    error="".join(result.error or "" for result in results),
+                    base64_image=screenshot_base64,
+                )
 
             elif action in ("mouse_move", "left_click", "right_click", "double_click"):
                 if not coordinate:
