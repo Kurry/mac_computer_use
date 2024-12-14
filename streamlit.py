@@ -6,12 +6,15 @@ import asyncio
 import base64
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import PosixPath
 from typing import cast, Any
 import json
+from contextlib import contextmanager
+import traceback
+from anthropic import RateLimitError
 
 import httpx
 import streamlit as st
@@ -148,6 +151,9 @@ STREAMLIT_STYLE = """
 
 WARNING_TEXT = ""
 
+INTERRUPT_TEXT = "(user stopped or interrupted and wrote the following)"
+INTERRUPT_TOOL_ERROR = "human stopped or interrupted tool execution"
+
 
 class Sender(StrEnum):
     USER = "user"
@@ -185,6 +191,8 @@ def setup_state():
         st.session_state.hide_images = False
     if "controls_enabled" not in st.session_state:
         st.session_state.controls_enabled = True
+    if "in_sampling_loop" not in st.session_state:
+        st.session_state.in_sampling_loop = False
 
 
 def _reset_model():
@@ -200,6 +208,10 @@ def toggle_controls():
 async def main():
     """Render loop for streamlit"""
     setup_state()
+
+    # Add cleanup calls at start of each loop
+    _cleanup_old_responses(st.session_state.responses)
+    _cleanup_old_messages()
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
 
@@ -316,7 +328,10 @@ async def main():
                 st.session_state.messages.append(
                     {
                         "role": Sender.USER,
-                        "content": [{"type": "text", "text": new_message}],
+                        "content": [
+                            *maybe_add_interruption_blocks(),
+                            BetaTextBlockParam(type="text", text=new_message),
+                        ],
                     }
                 )
                 _render_message(Sender.USER, new_message)
@@ -330,23 +345,24 @@ async def main():
                 return
 
             with st.spinner("Running Agent..."):
-                st.session_state.messages = await sampling_loop(
-                    system_prompt_suffix=st.session_state.custom_system_prompt,
-                    model=st.session_state.model,
-                    provider=st.session_state.provider,
-                    messages=st.session_state.messages,
-                    output_callback=partial(_render_message, Sender.BOT),
-                    tool_output_callback=partial(
-                        _tool_output_callback, tool_state=st.session_state.tools
-                    ),
-                    api_response_callback=partial(
-                        _api_response_callback,
-                        tab=http_logs,
-                        response_state=st.session_state.responses,
-                    ),
-                    api_key=st.session_state.api_key,
-                    only_n_most_recent_images=st.session_state.only_n_most_recent_images,
-                )
+                with track_sampling_loop():
+                    st.session_state.messages = await sampling_loop(
+                        system_prompt_suffix=st.session_state.custom_system_prompt,
+                        model=st.session_state.model,
+                        provider=st.session_state.provider,
+                        messages=st.session_state.messages,
+                        output_callback=partial(_render_message, Sender.BOT),
+                        tool_output_callback=partial(
+                            _tool_output_callback, tool_state=st.session_state.tools
+                        ),
+                        api_response_callback=partial(
+                            _api_response_callback,
+                            tab=http_logs,
+                            response_state=st.session_state.responses,
+                        ),
+                        api_key=st.session_state.api_key,
+                        only_n_most_recent_images=st.session_state.only_n_most_recent_images,
+                    )
 
         # Auto scroll after rendering
         html("""
@@ -513,13 +529,23 @@ def _render_message(
             message = cast(ToolResult, message)
             if message.output:
                 if message.__class__.__name__ == "CLIResult":
-                    st.code(message.output)
+                    # Truncate long CLI output
+                    MAX_CLI_OUTPUT = 1000  # Characters
+                    output = message.output
+                    if len(output) > MAX_CLI_OUTPUT:
+                        truncated = output[:MAX_CLI_OUTPUT] + f"\n... (truncated, {len(output)} chars total)"
+                        st.code(truncated)
+                    else:
+                        st.code(output)
                 else:
                     st.markdown(message.output)
             if message.error:
                 st.error(message.error)
             if message.base64_image and not st.session_state.hide_images:
-                st.image(base64.b64decode(message.base64_image))
+                try:
+                    st.image(base64.b64decode(message.base64_image))
+                except Exception:
+                    st.error("Failed to load image")
         elif isinstance(message, BetaToolUseBlock) or isinstance(message, ToolUseBlock):
             print(f"  tool use - name: {message.name}, input: {message.input}")
             st.code(f"Tool Use: {message.name}\nInput: {message.input}")
@@ -585,6 +611,71 @@ def _render_message(
         else:
             print(f"  other message type")
             st.markdown(str(message))
+
+
+def maybe_add_interruption_blocks():
+    if not st.session_state.in_sampling_loop:
+        return []
+    result = []
+    last_message = st.session_state.messages[-1]
+    previous_tool_use_ids = [
+        block["id"] for block in last_message["content"] if block["type"] == "tool_use"
+    ]
+    for tool_use_id in previous_tool_use_ids:
+        st.session_state.tools[tool_use_id] = ToolResult(error=INTERRUPT_TOOL_ERROR)
+        result.append(
+            BetaToolResultBlockParam(
+                tool_use_id=tool_use_id,
+                type="tool_result",
+                content=INTERRUPT_TOOL_ERROR,
+                is_error=True,
+            )
+        )
+    result.append(BetaTextBlockParam(type="text", text=INTERRUPT_TEXT))
+    return result
+
+
+@contextmanager
+def track_sampling_loop():
+    st.session_state.in_sampling_loop = True
+    yield
+    st.session_state.in_sampling_loop = False
+
+
+def _render_error(error: Exception):
+    if isinstance(error, RateLimitError):
+        body = "You have been rate limited."
+        if retry_after := error.response.headers.get("retry-after"):
+            body += f" **Retry after {str(timedelta(seconds=int(retry_after)))} (HH:MM:SS).**"
+        body += f"\n\n{error.message}"
+    else:
+        body = str(error)
+        body += "\n\n**Traceback:**"
+        lines = "\n".join(traceback.format_exception(error))
+        body += f"\n\n```{lines}```"
+    save_to_storage(f"error_{datetime.now().timestamp()}.md", body)
+    st.error(f"**{error.__class__.__name__}**\n\n{body}", icon=":material/error:")
+
+
+MAX_STORED_RESPONSES = 50  # Limit number of stored responses
+
+def _cleanup_old_responses(response_state: dict):
+    """Remove old responses if we have too many stored"""
+    before_count = len(response_state)
+    if len(response_state) > MAX_STORED_RESPONSES:
+        sorted_keys = sorted(response_state.keys())
+        for key in sorted_keys[:-MAX_STORED_RESPONSES]:
+            del response_state[key]
+        print(f"Cleaned up responses: {before_count} -> {len(response_state)}")
+
+
+MAX_MESSAGES = 100
+
+def _cleanup_old_messages():
+    before_count = len(st.session_state.messages)
+    if len(st.session_state.messages) > MAX_MESSAGES:
+        st.session_state.messages = st.session_state.messages[-MAX_MESSAGES:]
+        print(f"Cleaned up messages: {before_count} -> {len(st.session_state.messages)}")
 
 
 if __name__ == "__main__":
