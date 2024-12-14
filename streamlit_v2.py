@@ -205,21 +205,8 @@ async def main():
     setup_state()
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
-
     st.title("Claude Computer Use for Mac")
 
-    # User controls toggle button
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        st.button("Toggle Controls (⌘ + Space)", on_click=toggle_controls)
-        if st.session_state.controls_enabled:
-            st.success("Controls Enabled")
-        else:
-            st.error("Controls Disabled")
-
-    st.markdown(
-        """This is from [Mac Computer Use](https://github.com/deedy/mac_computer_use), a fork of [Anthropic Computer Use](https://github.com/anthropics/anthropic-quickstarts/blob/main/computer-use-demo/README.md) to work natively on Mac."""
-    )
 
     with st.sidebar:
 
