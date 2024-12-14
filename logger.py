@@ -45,7 +45,7 @@ def setup_logger():
 
     # Create a daily rotating file handler with date in filename
     file_handler = TimedRotatingFileHandler(
-        filename=log_dir / "app.log",
+        filename=log_dir / "mac_computer_use.log",
         when="midnight",
         interval=1,
         backupCount=7,  # Keep logs for 7 days
