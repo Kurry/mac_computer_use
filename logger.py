@@ -2,38 +2,61 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime
+import time
 
 class CustomFormatter(logging.Formatter):
-    COLORS = {
-        'DEBUG': '\033[36m',    # Cyan
-        'INFO': '\033[32m',     # Green
-        'WARNING': '\033[33m',  # Yellow
-        'ERROR': '\033[31m',    # Red
-        'CRITICAL': '\033[41m'  # Red background
-    }
-    RESET = '\033[0m'
-    INDENT = ' ' * 4  # Indentation for multiline outputs
+    def __init__(self):
+        # Tell formatter to extract caller info
+        super().__init__(style='{')
+        self._fmt = "%(asctime)s | %(levelname)-8s | %(module)s:%(lineno)-4d | %(message)s"
+        self.datefmt = '%H:%M:%S.%f'
+
+    def formatTime(self, record, datefmt=None):
+        # Only show time, not date
+        ct = self.converter(record.created)
+        if datefmt:
+            s = time.strftime(datefmt, ct)
+            return s[:-3]  # Trim microseconds to 3 digits
+        else:
+            return time.strftime('%H:%M:%S', ct)
 
     def format(self, record):
-        # Format timestamp to only show time (no date)
-        timestamp = datetime.fromtimestamp(record.created).strftime('%H:%M:%S.%f')[:-3]
+        # Get the original caller's info
+        if record.name == "logger":
+            # Walk up the stack to find the real caller
+            frame = logging.currentframe()
+            while frame and frame.f_code.co_filename.endswith("logger.py"):
+                frame = frame.f_back
+            if frame:
+                record.lineno = frame.f_lineno
+                record.module = frame.f_code.co_filename.split("/")[-1].split(".")[0]
 
         # Format based on event type
         if hasattr(record, 'event_type'):
+            message_parts = [
+                f"{self.formatTime(record, self.datefmt)}",
+                f"{record.levelname:<8}",
+                f"{record.module}:{record.lineno:<4}",
+                f"{record.event_type:<10}",
+                f"{record.sender:<10}"
+            ]
+
             if record.event_type == 'MESSAGE':
-                return f"{timestamp} | {record.levelname:<8} | {record.name}:{record.lineno:<4} | {record.event_type:<10} | {record.sender:<10} | {record.content_type}"
+                message_parts.append(f"{record.content_type}")
+                if hasattr(record, 'content'):
+                    message_parts.append(f"| {record.content}")
             elif record.event_type == 'TOOL_USE':
-                return f"{timestamp} | {record.levelname:<8} | {record.name}:{record.lineno:<4} | {record.event_type:<10} | {record.sender:<10} | {record.tool_name:<10} | {record.command}"
+                message_parts.extend([f"{record.tool_name:<10}", f"| {record.command}"])
             elif record.event_type == 'TOOL_RESULT':
-                base = f"{timestamp} | {record.levelname:<8} | {record.name}:{record.lineno:<4} | {record.event_type:<10} | {record.sender:<10} | {record.result_type:<10}"
-                if hasattr(record, 'error') and record.error:
-                    return f"{base} | Error: {record.error}"
-                if hasattr(record, 'output') and record.output:
-                    return f"{base} | output: {record.output}"
-                return base
-        
-        # Default format for non-event logs
-        return f"{timestamp} | {record.levelname:<8} | {record.name}:{record.lineno:<4} | {record.getMessage()}"
+                message_parts.append(f"{record.result_type:<10}")
+                if hasattr(record, 'error'):
+                    message_parts.append(f"| Error: {record.error}")
+                elif hasattr(record, 'output'):
+                    message_parts.append(f"| output: {record.output}")
+
+            return " | ".join(message_parts)
+
+        return super().format(record)
 
 def setup_logger():
     logger = logging.getLogger(__name__)

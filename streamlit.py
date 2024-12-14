@@ -500,7 +500,7 @@ def _render_message(
     message: str | dict | BetaToolUseBlock | ToolResult | BetaTextBlock,
 ):
     """Convert input from the user or output from the agent to a streamlit message."""
-    # Log messages but remove print statements
+    # Log messages with content
     if isinstance(message, dict) and message.get("type") == "tool_use" and message.get("name") == "bash":
         cmd = message.get("input", {}).get("command", "")
         log_tool_use(sender, "bash", cmd)
@@ -512,7 +512,19 @@ def _render_message(
         else:
             log_tool_result(sender, type(message).__name__)
     else:
-        log_message(sender, type(message).__name__)
+        # Log the actual content instead of just the type
+        if isinstance(message, str):
+            log_message(sender, "text", message)  # Log the actual message
+        elif isinstance(message, dict):
+            text = message.get("text", "")  # Get the text content
+            if text:
+                log_message(sender, "text", text)  # Log the actual text
+            else:
+                log_message(sender, "text", str(message))  # Fallback to full dict
+        elif isinstance(message, BetaTextBlock):
+            log_message(sender, "text", message.text)  # Log the actual text
+        else:
+            log_message(sender, "text", str(message))  # Convert anything else to string
 
     if not message:
         return
@@ -528,11 +540,12 @@ def _render_message(
         if is_tool_result:
             message = cast(ToolResult, message)
             if message.output:
-                # Remove truncation for CLI output
+                # Truncate long outputs
+                truncated_output = truncate_message_content(message.output)
                 if message.__class__.__name__ == "CLIResult":
-                    st.code(message.output)  # Show full output
+                    st.code(truncated_output)
                 else:
-                    st.markdown(message.output)
+                    st.markdown(truncated_output)
             if message.error:
                 st.error(message.error)
             if message.base64_image and not st.session_state.hide_images:
@@ -647,7 +660,8 @@ def _render_error(error: Exception):
     st.error(f"**{error.__class__.__name__}**\n\n{body}", icon=":material/error:")
 
 
-MAX_STORED_RESPONSES = 50  # Limit number of stored responses
+MAX_STORED_RESPONSES = 5  # Reduce from 50 to 5
+MAX_MESSAGES = 5  # Reduce from 100 to 5
 
 def _cleanup_old_responses(response_state: dict):
     """Remove old responses if we have too many stored"""
@@ -659,7 +673,13 @@ def _cleanup_old_responses(response_state: dict):
         logger.debug(f"Cleaned up responses from {before_count} to {len(response_state)}")
 
 
-MAX_MESSAGES = 100
+def truncate_message_content(content: str, max_lines: int = 5) -> str:
+    """Truncate message content to max_lines, adding '...' if truncated"""
+    lines = content.splitlines()
+    if len(lines) > max_lines:
+        return "\n".join(lines[:max_lines]) + "\n..."
+    return content
+
 
 def _cleanup_old_messages():
     if len(st.session_state.messages) > MAX_MESSAGES:
