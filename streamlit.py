@@ -6,6 +6,7 @@ import asyncio
 import base64
 import os
 import subprocess
+import time
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial, wraps
@@ -531,10 +532,9 @@ def _render_message(
         if is_tool_result:
             message = cast(ToolResult, message)
             if message.output:
+                # Remove truncation for CLI output
                 if message.__class__.__name__ == "CLIResult":
-                    # Truncate long CLI output to first line
-                    output = message.output.split('\n')[0] + "..." if '\n' in message.output else message.output
-                    st.code(output)
+                    st.code(message.output)  # Show full output
                 else:
                     st.markdown(message.output)
             if message.error:
@@ -656,6 +656,7 @@ MAX_STORED_RESPONSES = 50  # Limit number of stored responses
 def _cleanup_old_responses(response_state: dict):
     """Remove old responses if we have too many stored"""
     if len(response_state) > MAX_STORED_RESPONSES:
+        before_count = len(response_state)
         sorted_keys = sorted(response_state.keys())
         for key in sorted_keys[:-MAX_STORED_RESPONSES]:
             del response_state[key]
@@ -782,6 +783,7 @@ class MessageBatcher:
 
 
 def load_optimized_css():
+    """Load CSS optimizations for better performance"""
     return """
     <style>
         /* Use CSS containment for better performance */
@@ -801,10 +803,66 @@ def load_optimized_css():
             transform: translateZ(0);
             backface-visibility: hidden;
         }
+
+        /* Optimize scrolling performance */
+        .element-container {
+            will-change: transform;
+            transform: translateZ(0);
+        }
+
+        /* Reduce layout thrashing */
+        .stChatMessage {
+            contain: layout style;
+        }
     </style>
     """
 
+# Apply the optimized CSS
 st.markdown(load_optimized_css(), unsafe_allow_html=True)
+
+
+def render_visible_messages(messages):
+    """
+    Render a subset of messages with virtualization
+    """
+    html_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get('content', '')
+            role = msg.get('role', '')
+            
+            # Handle different message types
+            if isinstance(content, list):
+                # Handle message blocks
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get('type') == 'text':
+                            text = block.get('text', '')
+                            html_messages.append(f"""
+                                <div class="chat-message {role}">
+                                    <div class="message-content">{text}</div>
+                                </div>
+                            """)
+                        elif block.get('type') == 'tool_use':
+                            tool_name = block.get('name', '')
+                            tool_input = json.dumps(block.get('input', {}))
+                            html_messages.append(f"""
+                                <div class="chat-message tool">
+                                    <div class="message-content">
+                                        <pre>Tool Use: {tool_name}
+Input: {tool_input}</pre>
+                                    </div>
+                                </div>
+                            """)
+            else:
+                # Handle simple text messages
+                html_messages.append(f"""
+                    <div class="chat-message {role}">
+                        <div class="message-content">{content}</div>
+                    </div>
+                """)
+    
+    return "\n".join(html_messages)
 
 
 if __name__ == "__main__":
