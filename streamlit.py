@@ -8,7 +8,7 @@ import os
 import subprocess
 from datetime import datetime, timedelta
 from enum import StrEnum
-from functools import partial
+from functools import partial, wraps
 from pathlib import PosixPath
 from typing import cast, Any
 import json
@@ -669,6 +669,142 @@ def _cleanup_old_messages():
         before_count = len(st.session_state.messages)
         st.session_state.messages = st.session_state.messages[-MAX_MESSAGES:]
         logger.debug(f"Cleaned up messages from {before_count} to {len(st.session_state.messages)}")
+
+
+def render_chat_history(messages):
+    """
+    Render chat history with virtualization for better performance
+    """
+    # Only render visible messages
+    VISIBLE_MESSAGES = 10
+    
+    js_code = """
+        // Implement intersection observer for lazy loading
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    // Load more messages when user scrolls
+                    loadMoreMessages();
+                }
+            });
+        });
+        
+        const chatContainer = document.getElementById('chat-messages');
+        observer.observe(chatContainer);
+    """
+    
+    html_string = f"""
+    <div class="chat-container">
+        <div class="virtualized-list" id="chat-messages">
+            {render_visible_messages(messages[-VISIBLE_MESSAGES:])}
+        </div>
+    </div>
+    
+    <script>
+        {js_code}
+    </script>
+    """
+    
+    return html(html_string)
+
+
+def debounce(wait):
+    """
+    Decorator to debounce rapid UI updates
+    """
+    def decorator(fn):
+        last_timestamp = 0
+        
+        @wraps(fn)
+        def debounced(*args, **kwargs):
+            nonlocal last_timestamp
+            current_time = time.time()
+            
+            if current_time - last_timestamp > wait:
+                last_timestamp = current_time
+                return fn(*args, **kwargs)
+        return debounced
+    return decorator
+
+@debounce(0.1)  # 100ms debounce
+def update_chat_ui(messages):
+    # Update UI logic here
+    pass
+
+
+from dataclasses import dataclass
+from typing import List, Optional
+
+@dataclass
+class ChatMessage:
+    """Optimized message storage"""
+    content: str
+    role: str
+    timestamp: float
+    rendered: bool = False
+    
+    # Only store essential data
+    def to_dict(self) -> dict:
+        return {
+            "content": self.content,
+            "role": self.role,
+            "timestamp": self.timestamp
+        }
+
+class ChatHistory:
+    def __init__(self):
+        self.messages: List[ChatMessage] = []
+        self.max_messages = 100  # Limit total messages
+        
+    def add_message(self, message: ChatMessage):
+        if len(self.messages) >= self.max_messages:
+            # Remove oldest messages when limit reached
+            self.messages = self.messages[-(self.max_messages-1):]
+        self.messages.append(message)
+
+
+class MessageBatcher:
+    """Batch message updates to reduce UI refreshes"""
+    def __init__(self, batch_size=5):
+        self.pending_messages = []
+        self.batch_size = batch_size
+        
+    def add(self, message: ChatMessage):
+        self.pending_messages.append(message)
+        if len(self.pending_messages) >= self.batch_size:
+            self.flush()
+            
+    def flush(self):
+        if self.pending_messages:
+            st.session_state.messages.extend(self.pending_messages)
+            self.pending_messages = []
+            st.experimental_rerun()
+
+
+def load_optimized_css():
+    return """
+    <style>
+        /* Use CSS containment for better performance */
+        .chat-container {
+            contain: content;
+            overflow-y: auto;
+            height: 600px;
+        }
+        
+        /* Use CSS will-change for smoother animations */
+        .message-animation {
+            will-change: transform, opacity;
+        }
+        
+        /* Reduce repaints */
+        .chat-message {
+            transform: translateZ(0);
+            backface-visibility: hidden;
+        }
+    </style>
+    """
+
+st.markdown(load_optimized_css(), unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
