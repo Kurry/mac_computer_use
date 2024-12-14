@@ -45,7 +45,6 @@ source venv/bin/activate
 chmod +x setup.sh
 ./setup.sh
 ```
-
 4. Install Python requirements:
 
 ```bash
@@ -94,3 +93,4 @@ streamlit run streamlit.py
 
 > [!IMPORTANT]
 > The Beta API used in this reference implementation is subject to change. Please refer to the [API release notes](https://docs.anthropic.com/en/release-notes/api) for the most up-to-date information.
+

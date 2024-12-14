@@ -13,20 +13,21 @@ from pathlib import PosixPath
 from typing import cast, Any
 import json
 
+import httpx
+import streamlit as st
+from streamlit.components.v1 import html
+from streamlit.delta_generator import DeltaGenerator
 from anthropic import APIResponse
 from anthropic.types import Message
 from anthropic.types.beta import BetaMessage, BetaToolUseBlock, BetaTextBlock
 from anthropic.types.tool_use_block import ToolUseBlock
 from dotenv import load_dotenv
 
-import streamlit as st
-from streamlit.components.v1 import html
 from loop import (
     PROVIDER_TO_DEFAULT_MODEL_NAME,
     APIProvider,
     sampling_loop,
 )
-from streamlit.delta_generator import DeltaGenerator
 from tools import ToolResult
 
 load_dotenv()
@@ -164,7 +165,7 @@ def setup_state():
         )
     if "provider" not in st.session_state:
         st.session_state.provider = (
-            os.getenv("API_PROVIDER", "bricks") or APIProvider.BRICKS
+            os.getenv("API_PROVIDER", "anthropic") or APIProvider.ANTHROPIC
         )
     if "provider_radio" not in st.session_state:
         st.session_state.provider_radio = st.session_state.provider
@@ -236,12 +237,8 @@ async def main():
 
         st.text_input("Model", key="model")
 
-        if st.session_state.provider in [APIProvider.ANTHROPIC, APIProvider.BRICKS]:
-            api_key_label = (
-                "BricksAI Secret Key"
-                if st.session_state.provider == APIProvider.BRICKS
-                else "Anthropic API Key"
-            )
+        if st.session_state.provider == APIProvider.ANTHROPIC:
+            api_key_label = "Anthropic API Key"
             st.text_input(
                 api_key_label,
                 type="password",
@@ -311,7 +308,8 @@ async def main():
 
             # render past http exchanges
             for identity, response in st.session_state.responses.items():
-                _render_api_response(response, identity, http_logs)
+                if isinstance(response, httpx.Response):
+                    _render_api_response(response.request, response, identity, http_logs)
 
             # render new message
             if new_message:
@@ -359,13 +357,9 @@ async def main():
 
 
 def validate_auth(provider: APIProvider, api_key: str | None):
-    if provider in [APIProvider.ANTHROPIC, APIProvider.BRICKS]:
+    if provider == APIProvider.ANTHROPIC:
         if not api_key:
-            key_type = (
-                "BricksAI Secret Key"
-                if provider == APIProvider.BRICKS
-                else "Anthropic API Key"
-            )
+            key_type = "Anthropic API Key"
             return f"Enter your {key_type} in the sidebar to continue."
     if provider == APIProvider.BEDROCK:
         import boto3
@@ -412,14 +406,21 @@ def save_to_storage(filename: str, data: str) -> None:
 
 
 def _api_response_callback(
-    response: APIResponse[BetaMessage],
+    request: httpx.Request,
+    response: httpx.Response | object | None,
+    error: Exception | None,
+    *,  # Force keyword arguments
     tab: DeltaGenerator,
-    response_state: dict[str, APIResponse[BetaMessage]],
+    response_state: dict[str, Any],  # Changed type hint to be more flexible
 ):
     """Handle an API response by storing it to state and rendering it."""
     response_id = datetime.now().isoformat()
-    response_state[response_id] = response
-    _render_api_response(response, response_id, tab)
+    if isinstance(response, httpx.Response):
+        response_state[response_id] = response
+        _render_api_response(request, response, response_id, tab)
+    elif error:
+        with tab:
+            st.error(f"API Error: {error}")
 
 
 def _tool_output_callback(
@@ -458,20 +459,23 @@ def _tool_output_callback(
 
 
 def _render_api_response(
-    response: APIResponse[BetaMessage], response_id: str, tab: DeltaGenerator
+    request: httpx.Request,
+    response: httpx.Response,
+    response_id: str,
+    tab: DeltaGenerator,
 ):
     """Render an API response to a streamlit tab"""
     with tab:
         with st.expander(f"Request/Response ({response_id})"):
             newline = "\\n\\n"
             st.markdown(
-                f"`{response.http_request.method} {response.http_request.url}`{newline}{newline.join(f'`{k}: {v}`' for k, v in response.http_request.headers.items())}"
+                f"`{request.method} {request.url}`{newline}{newline.join(f'`{k}: {v}`' for k, v in request.headers.items())}"
             )
-            st.json(response.http_request.read().decode())
+            st.json(request.read().decode())
             st.markdown(
-                f"`{response.http_response.status_code}`{newline}{newline.join(f'`{k}: {v}`' for k, v in response.headers.items())}"
+                f"`{response.status_code}`{newline}{newline.join(f'`{k}: {v}`' for k, v in response.headers.items())}"
             )
-            st.json(response.http_response.text)
+            st.json(response.text)
 
 
 def _render_message(
@@ -479,6 +483,21 @@ def _render_message(
     message: str | dict | BetaToolUseBlock | ToolResult | BetaTextBlock,
 ):
     """Convert input from the user or output from the agent to a streamlit message."""
+    # Print debug info
+    if isinstance(message, dict) and message.get("type") == "tool_use" and message.get("name") == "bash":
+        cmd = message.get("input", {}).get("command", "")
+        print(f"DEBUG: {sender} | bash | {cmd}")
+    elif isinstance(message, ToolResult):
+        if message.error:
+            print(f"DEBUG: {sender} | {type(message).__name__} | error: {message.error}")
+        elif message.output and not message.base64_image:  # Skip image outputs
+            output = message.output[:50] + "..." if len(message.output) > 50 else message.output
+            print(f"DEBUG: {sender} | {type(message).__name__} | output: {output}")
+        else:
+            print(f"DEBUG: {sender} | {type(message).__name__}")
+    else:
+        print(f"DEBUG: {sender} | {type(message).__name__}")
+
     if not message:
         return
 
@@ -486,13 +505,8 @@ def _render_message(
         isinstance(message, ToolResult)
         or message.__class__.__name__ == "ToolResult"
         or message.__class__.__name__ == "CLIResult"
+        or message.__class__.__name__ == "ToolFailure"
     )
-
-    if (is_tool_result
-        and st.session_state.hide_images
-        and not hasattr(message, "error")
-        and not hasattr(message, "output")):
-        return
 
     with st.chat_message(sender):
         if is_tool_result:
@@ -507,22 +521,69 @@ def _render_message(
             if message.base64_image and not st.session_state.hide_images:
                 st.image(base64.b64decode(message.base64_image))
         elif isinstance(message, BetaToolUseBlock) or isinstance(message, ToolUseBlock):
+            print(f"  tool use - name: {message.name}, input: {message.input}")
             st.code(f"Tool Use: {message.name}\nInput: {message.input}")
         elif isinstance(message, dict):
+            print(f"  dict message - type: {message.get('type')}")
             if message.get("type") == "text":
-                st.markdown(message.get("text", ""))
+                text = message.get("text", "")
+                if "<thinking>" in text and "</thinking>" in text:
+                    parts = text.split("<thinking>")
+                    pre_thinking = parts[0]
+                    thinking_and_post = parts[1].split("</thinking>")
+                    thinking = thinking_and_post[0]
+                    post_thinking = thinking_and_post[1] if len(thinking_and_post) > 1 else ""
+                    
+                    if pre_thinking.strip():
+                        st.markdown(pre_thinking)
+                    with st.expander("Thinking...", expanded=True):
+                        st.markdown(thinking)
+                    if post_thinking.strip():
+                        st.markdown(post_thinking)
+                else:
+                    st.markdown(text)
             elif message.get("type") == "tool_use":
-                st.code(f"Tool Use: {message.get('name')}\nInput: {json.dumps(message.get('parameters', {}), indent=2)}")
+                if message.get("name") == "bash":
+                    command = message.get("input", {}).get("command", "")
+                    st.code(f"Tool Use: bash\nInput: {command}")
+                elif message.get("name") == "computer":
+                    input_data = message.get("input", {})
+                    action = input_data.get("action", "")
+                    text = input_data.get("text", "")
+                    coordinate = input_data.get("coordinate", "")
+                    
+                    input_str = f"action: {action}"
+                    if text:
+                        input_str += f", text: {text}"
+                    if coordinate:
+                        input_str += f", coordinate: {coordinate}"
+                    
+                    st.code(f"Tool Use: computer\nInput: {input_str}")
+                elif message.get("name") == "str_replace_editor":
+                    input_data = message.get("input", {})
+                    params = []
+                    if 'command' in input_data:
+                        params.append(f"command: {input_data['command']}")
+                    if 'path' in input_data:
+                        params.append(f"path: {input_data['path']}")
+                    if 'file_text' in input_data:
+                        params.append(f"text: {input_data['file_text']}")
+                    
+                    input_str = ", ".join(params) if params else "{}"
+                    st.code(f"Tool Use: str_replace_editor\nInput: {input_str}")
+                else:
+                    st.code(f"Tool Use: {message.get('name')}\nInput: {json.dumps(message.get('input', {}), indent=2)}")
             else:
-                # Extract text content from BetaTextBlock or other message types
                 text_content = message.get("text", "")
                 if text_content:
                     st.markdown(text_content)
                 else:
                     st.markdown(str(message))
         elif isinstance(message, BetaTextBlock):
+            print(f"  text block - text: {message.text}")
             st.markdown(message.text)
         else:
+            print(f"  other message type")
             st.markdown(str(message))
 
 

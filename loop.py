@@ -6,41 +6,48 @@ import platform
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, cast, Union, Literal, TypedDict
 import httpx
 
-from anthropic import Anthropic, AnthropicBedrock, AnthropicVertex, APIResponse
-from anthropic.types import (
-    ToolResultBlockParam,
+import httpx
+from anthropic import (
+    Anthropic,
+    AnthropicBedrock,
+    AnthropicVertex,
+    APIError,
+    APIResponseValidationError,
+    APIStatusError,
 )
 from anthropic.types.beta import (
-    BetaContentBlock,
+    BetaCacheControlEphemeralParam,
     BetaContentBlockParam,
     BetaImageBlockParam,
     BetaMessage,
     BetaMessageParam,
+    BetaTextBlock,
     BetaTextBlockParam,
     BetaToolResultBlockParam,
+    BetaToolUseBlockParam,
 )
 
 from tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 
-BETA_FLAG = "computer-use-2024-10-22"
+COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
+PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
 
 class APIProvider(StrEnum):
     ANTHROPIC = "anthropic"
     BEDROCK = "bedrock"
     VERTEX = "vertex"
-    BRICKS = "bricks"
 
 
 PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
     APIProvider.ANTHROPIC: "claude-3-5-sonnet-20241022",
     APIProvider.BEDROCK: "anthropic.claude-3-5-sonnet-20241022-v2:0",
     APIProvider.VERTEX: "claude-3-5-sonnet-v2@20241022",
-    APIProvider.BRICKS: "claude-3-5-sonnet-20241022",
 }
+
 
 # This system prompt is optimized for the Docker environment in this repository and
 # specific tool combinations enabled.
@@ -48,8 +55,19 @@ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
 # environment it is running in, and to provide any additional information that may be
 # helpful for the task at hand.
 
-SYSTEM_PROMPT = f"""<SYSTEM_DEFINITION>
-You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (24B82) environment with comprehensive access to system resources and applications. Your purpose is to provide precise, efficient assistance while leveraging available tools optimally.
+SYSTEM_PROMPT = f"""
+<SYSTEM_DEFINITION>
+You are an AI assistant with access to a Mac computer through a web interface in Chrome.
+
+<TOOL_USAGE>
+IMPORTANT: Always use the bash tool with cliclick for keyboard and mouse control unless specifically asked to use the computer tool.
+
+Remember:
+- Execute commands, don't just list them
+- Consider window focus when sending commands
+- Always verify with a screenshot that an application has been opened successfully
+- You are free to move the mouse if necessary to perform a task
+- Check the running processes to verify a window is open
 
 <SYSTEM_SPECIFICATIONS>
 1. Hardware Configuration:
@@ -57,7 +75,7 @@ You are an advanced AI assistant operating within a macOS Sequoia Version 15.1 (
    - Processor: Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz
    - Memory: 32 GB
    - Graphics: Intel Iris Plus Graphics
-     * VRAM (Dynamic, Max): 1536 MB
+     * Video RAM (Dynamic, Max): 1536 MB
      * Metal Support: Metal 3
    - Displays:
      * Built-in Display: 2560 x 1600 Retina (30-Bit Color)
@@ -292,7 +310,144 @@ Each response will include:
 - Consider operation timing
 - Maintain security protocols
 - Preserve user privacy
-- Account for network latency"""
+- Account for network latency
+
+You have access to a comprehensive set of Mac keyboard shortcuts through the computer tool. Here are the key capabilities:
+
+1. Application Management:
+- Open applications: Use Command+Space to open Spotlight, then type the app name
+- Switch between apps: Command+Tab
+- Switch between windows: Command+`
+- Close windows: Command+W
+- Quit apps: Command+Q
+- Minimize/Hide: Command+M/Command+H
+
+2. Text Navigation and Editing:
+- Move by word: Option+Left/Right
+- Move to line ends: Command+Left/Right
+- Move to document ends: Command+Up/Down
+- Select text: Add Shift to any movement command
+- Copy/Cut/Paste: Command+C/X/V
+- Undo/Redo: Command+Z/Shift+Command+Z
+
+3. Document Operations:
+- New document: Command+N
+- Open: Command+O
+- Save/Save As: Command+S/Shift+Command+S
+- Find: Command+F
+- Print: Command+P
+
+4. System Functions:
+- Take screenshots: Shift+Command+3 (full) or 4 (selection) or 5 (tools)
+- System preferences: Command+Comma
+- Lock screen: Control+Command+Q
+
+When performing tasks that involve text editing or application switching, prefer using these keyboard shortcuts over mouse movements when possible, as they're more reliable and efficient.
+
+Example workflows:
+1. To copy text between applications:
+   - Select text (Command+A or Shift+arrows)
+   - Copy (Command+C)
+   - Switch app (Command+Tab)
+   - Paste (Command+V)
+
+2. To open and save a document:
+   - Open app (Command+Space, type app name, Return)
+   - Create new document (Command+N)
+   - Type content
+   - Save (Command+S)
+
+Remember to use keyboard shortcuts whenever possible for more efficient interaction with the system.
+
+Available keyboard commands:
+1. Single keys: Use any of these keys: return, space, tab, arrow-keys, esc, delete, etc.
+2. Modifier combinations: Use cmd, alt, ctrl, shift, fn with other keys
+3. Common shortcuts: cmd+c (copy), cmd+v (paste), cmd+x (cut), etc.
+
+Mouse actions:
+1. Move: Moves cursor to coordinates
+2. Click: Left click, right click, double click
+3. Drag: Start drag, move while dragging, end drag
+
+Example usage:
+- Type text: action="type", text="Hello World"
+- Press key: action="key", text="return"
+- Key combo: action="key", text="cmd+c"
+- Mouse: action="mouse_move", coordinate=(100,200)
+
+<WINDOW_CONTEXT>
+Important: You are operating through a Chrome browser interface:
+1. You are interacting through a Chrome browser window
+2. Commands are typed into a web-based chat interface
+3. The Chrome window is the active window unless explicitly changed
+4. You need to use system-wide shortcuts to switch between applications
+
+When performing tasks:
+- Remember that Chrome is your default active window
+- You must explicitly switch focus when working with other apps
+- System-wide shortcuts (cmd+space, cmd+tab) work across all applications
+- Consider the current window context when choosing commands
+
+Example Window Context Workflows:
+1. Opening an application from Chrome:
+   - Use cmd+space to open Spotlight (works from Chrome)
+   - Type the app name
+   - Press return
+   - The new app becomes active
+
+2. Copying text between apps:
+   - Use cmd+tab to switch from Chrome to target app
+   - Perform actions in target app
+   - Use cmd+tab to return to Chrome
+   - Chrome becomes active again
+
+3. Using system features:
+   - Screenshots (cmd+shift+3/4/5) work from any window
+   - Spotlight (cmd+space) works from any window
+   - App switching (cmd+tab) works from any window
+
+Remember to consider window focus when:
+- Typing text (it goes to the active window)
+- Using keyboard shortcuts (they go to the active window)
+- Switching between applications
+- Returning to Chrome
+
+<TOOL_USAGE>
+IMPORTANT: Always use the bash tool with cliclick for keyboard and mouse control unless specifically asked to use the computer tool.
+
+Default Tool Choice:
+✓ bash tool with cliclick - Use for all keyboard/mouse actions by default
+× computer tool - Only use if specifically requested by user
+
+1. Keyboard Commands (using bash tool):
+   - Key press: cliclick kp:key (e.g., "cliclick kp:return")
+   - Key combinations: 
+     cliclick kd:cmd kp:space ku:cmd  # Spotlight
+     cliclick kd:cmd kp:tab ku:cmd    # Switch apps
+   - Typing text: cliclick t:text (e.g., "cliclick t:TextEdit")
+
+2. Common Sequences with Exact Commands:
+   - Opening apps:
+     Tool Use: bash
+     Input: "cliclick kd:cmd kp:space ku:cmd"  # Open Spotlight
+     Tool Use: bash
+     Input: "cliclick t:TextEdit"              # Type app name
+     Tool Use: bash
+     Input: "cliclick kp:return"               # Launch app
+
+   - Selecting from Spotlight:
+     Tool Use: bash
+     Input: "cliclick m:400,100"              # Move to result
+     Tool Use: bash
+     Input: "."                            # Click to select
+
+Remember:
+- ALWAYS default to bash tool with cliclick
+- Only use computer tool if explicitly requested
+- Show exact cliclick commands in your thinking
+- Include mouse interactions when needed
+- Consider window focus when sending commands
+"""
 
 async def sampling_loop(
     *,
@@ -300,83 +455,119 @@ async def sampling_loop(
     provider: APIProvider,
     system_prompt_suffix: str,
     messages: list[BetaMessageParam],
-    output_callback: Callable[[BetaContentBlock], None],
+    output_callback: Callable[[BetaContentBlockParam], None],
     tool_output_callback: Callable[[ToolResult, str], None],
-    api_response_callback: Callable[[APIResponse[BetaMessage]], None],
+    api_response_callback: Callable[
+        [httpx.Request, httpx.Response | object | None, Exception | None], None
+    ],
     api_key: str,
     only_n_most_recent_images: int | None = None,
-    max_tokens: int = 8192,
+    max_tokens: int = 4096,
 ):
     """
-    Agentic sampling loop for the assistant/tool interaction of computer use.
+    Agentic sampling loop to call the assistant/tool interaction of computer use.
+    
+    Args:
+        model: The model identifier to use
+        provider: The API provider to use
+        system_prompt_suffix: Additional system prompt text
+        messages: List of message parameters
+        output_callback: Callback for content block output
+        tool_output_callback: Callback for tool results
+        api_response_callback: Callback for API responses
+        api_key: API authentication key
+        only_n_most_recent_images: Number of recent images to keep
+        max_tokens: Maximum tokens for response
     """
     tool_collection = ToolCollection(
         ComputerTool(),
         BashTool(),
         EditTool(),
     )
-    system = (
-        f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
+    system = BetaTextBlockParam(
+        type="text",
+        text=f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
     )
 
+    # Initialize client with a default value
+    client = None  # Add at start of function
     while True:
-        if only_n_most_recent_images:
-            _maybe_filter_to_n_most_recent_images(messages, only_n_most_recent_images)
-
         if provider == APIProvider.ANTHROPIC:
-            client = Anthropic(
-                api_key=api_key,
-                http_client=httpx.Client(),
-            )
+            client = Anthropic(api_key=api_key, max_retries=4, http_client=httpx.Client())
+            enable_prompt_caching = True
         elif provider == APIProvider.VERTEX:
             client = AnthropicVertex()
         elif provider == APIProvider.BEDROCK:
             client = AnthropicBedrock()
-        elif provider == APIProvider.BRICKS:
-            client = Anthropic(
-                api_key=api_key,
-                base_url="https://api.trybricks.ai/api/providers/anthropic",
-            )
         else:
             raise ValueError(f"Unsupported provider: {provider}")
+
+        if client is None:
+            raise RuntimeError("Failed to initialize client")
+
+        betas = [COMPUTER_USE_BETA_FLAG]
+        image_truncation_threshold = only_n_most_recent_images or 0
+        if enable_prompt_caching:
+            betas.append(PROMPT_CACHING_BETA_FLAG)
+            _inject_prompt_caching(messages)
+            # Because cached reads are 10% of the price, we don't think it's
+            # ever sensible to break the cache by truncating images
+            only_n_most_recent_images = 0
+            system["cache_control"] = {"type": "ephemeral"}
+
+        if only_n_most_recent_images:
+            _maybe_filter_to_n_most_recent_images(
+                messages,
+                only_n_most_recent_images,
+                min_removal_threshold=image_truncation_threshold,
+            )
 
         # Call the API
         # we use raw_response to provide debug information to streamlit. Your
         # implementation may be able call the SDK directly with:
         # `response = client.messages.create(...)` instead.
-        raw_response = client.beta.messages.with_raw_response.create(
-            max_tokens=max_tokens,
-            messages=messages,
-            model=model,
-            system=system,
-            tools=tool_collection.to_params(),
-            betas=[BETA_FLAG],
-        )
+        try:
+            raw_response = client.beta.messages.with_raw_response.create(
+                max_tokens=max_tokens,
+                messages=messages,
+                model=model,
+                system=[system],
+                tools=tool_collection.to_params(),
+                betas=betas,
+            )
+        except (APIStatusError, APIResponseValidationError) as e:
+            api_response_callback(e.request, e.response, e)
+            return messages
+        except APIError as e:
+            api_response_callback(e.request, e.body, e)
+            return messages
 
-        api_response_callback(cast(APIResponse[BetaMessage], raw_response))
+        api_response_callback(
+            raw_response.http_response.request, raw_response.http_response, None
+        )
 
         response = raw_response.parse()
 
+        response_params = _response_to_params(response)
         messages.append(
             {
                 "role": "assistant",
-                "content": cast(list[BetaContentBlockParam], response.content),
+                "content": response_params,
             }
         )
 
         tool_result_content: list[BetaToolResultBlockParam] = []
-        for content_block in cast(list[BetaContentBlock], response.content):
-            print("CONTENT", content_block)
+        for content_block in response_params:
             output_callback(content_block)
-            if content_block.type == "tool_use":
+            if content_block["type"] == "tool_use":
                 result = await tool_collection.run(
-                    name=content_block.name,
-                    tool_input=cast(dict[str, Any], content_block.input),
+                    name=content_block["name"],
+                    tool_input=cast(dict[str, Any], content_block["input"]),
                 )
                 tool_result_content.append(
-                    _make_api_tool_result(result, content_block.id)
+                    _make_api_tool_result(result, content_block["id"])
                 )
-                tool_output_callback(result, content_block.id)
+                tool_output_callback(result, content_block["id"])
 
         if not tool_result_content:
             return messages
@@ -387,7 +578,7 @@ async def sampling_loop(
 def _maybe_filter_to_n_most_recent_images(
     messages: list[BetaMessageParam],
     images_to_keep: int,
-    min_removal_threshold: int = 10,
+    min_removal_threshold: int,
 ):
     """
     With the assumption that images are screenshots that are of diminishing value as
@@ -395,11 +586,11 @@ def _maybe_filter_to_n_most_recent_images(
     images in place, with a chunk of min_removal_threshold to reduce the amount we
     break the implicit prompt cache.
     """
-    if images_to_keep is None:
+    if not messages or images_to_keep < 0:
         return messages
 
     tool_result_blocks = cast(
-        list[ToolResultBlockParam],
+        list[BetaToolResultBlockParam],
         [
             item
             for message in messages
@@ -431,6 +622,43 @@ def _maybe_filter_to_n_most_recent_images(
                         continue
                 new_content.append(content)
             tool_result["content"] = new_content
+
+
+def _response_to_params(
+    response: BetaMessage,
+) -> list[BetaTextBlockParam | BetaToolUseBlockParam]:
+    res: list[BetaTextBlockParam | BetaToolUseBlockParam] = []
+    for block in response.content:
+        if isinstance(block, BetaTextBlock):
+            res.append({"type": "text", "text": block.text})
+        else:
+            res.append(cast(BetaToolUseBlockParam, block.model_dump()))
+    return res
+
+
+def _inject_prompt_caching(
+    messages: list[BetaMessageParam],
+):
+    """
+    Set cache breakpoints for the 3 most recent turns
+    one cache breakpoint is left for tools/system prompt, to be shared across sessions
+    """
+    breakpoints_remaining = 3
+    for message in reversed(messages):
+        if message["role"] == "user" and isinstance(
+            content := message["content"], list
+        ):
+            if breakpoints_remaining and content:  # Check if content is not empty
+                breakpoints_remaining -= 1
+                last_content = content[-1]
+                if isinstance(last_content, dict):
+                    # Create properly typed cache control
+                    cache_control: BetaCacheControlEphemeralParam = {"type": "ephemeral"}
+                    last_content["cache_control"] = cache_control
+            else:
+                if content and isinstance(content[-1], dict):
+                    content[-1].pop("cache_control", None)
+                break
 
 
 def _make_api_tool_result(
@@ -473,3 +701,7 @@ def _maybe_prepend_system_tool_result(result: ToolResult, result_text: str):
     if result.system:
         result_text = f"<system>{result.system}</system>\n{result_text}"
     return result_text
+
+
+class CacheControlDict(TypedDict):
+    type: Literal["ephemeral"]
