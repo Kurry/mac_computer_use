@@ -38,8 +38,12 @@ from loop import (
     APIProvider,
     sampling_loop,
 )
-from tools import ToolResult
+from tools import ToolResult, run, bash
 from logger import logger, log_tool_use, log_tool_result, log_message
+
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import importlib
 
 load_dotenv()
 
@@ -225,6 +229,10 @@ def toggle_controls():
 
 async def main():
     """Render loop for streamlit"""
+    # Hot reload modules
+    importlib.reload(run)
+    importlib.reload(bash)
+    
     setup_state()
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
@@ -879,6 +887,21 @@ Input: {tool_input}</pre>
                 """)
     
     return "\n".join(html_messages)
+
+
+class ModuleReloader(FileSystemEventHandler):
+    def on_modified(self, event):
+        if event.src_path.endswith('run.py'):
+            importlib.reload(run)
+            print("Reloaded run.py")
+        elif event.src_path.endswith('bash.py'):
+            importlib.reload(bash)
+            print("Reloaded bash.py")
+
+# Add before main():
+observer = Observer()
+observer.schedule(ModuleReloader(), path='tools/', recursive=False)
+observer.start()
 
 
 if __name__ == "__main__":
