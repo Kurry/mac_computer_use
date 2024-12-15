@@ -13,6 +13,7 @@ from anthropic.types.beta import BetaToolComputerUse20241022Param
 
 from .base import BaseAnthropicTool, ToolError, ToolResult
 from .run import run
+from logger import logger, log_tool_use, log_tool_result, log_message
 
 # Constants
 OUTPUT_DIR = "/tmp/outputs"
@@ -23,19 +24,35 @@ MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB in bytes
 # Check if we're running in a codespace environment
 IS_CODESPACE = os.environ.get("CODESPACES") == "true"
 
-Action = Literal[
-    "key",
-    "type",
-    "mouse_move",
-    "left_click",
-    "left_click_drag",
-    "right_click",
-    "middle_click",
-    "double_click",
-    "screenshot",
-    "cursor_position",
-]
+class Action(StrEnum):
+    KEY_DOWN = "kd"      # Key down event
+    KEY_PRESS = "kp"     # Key press (down + up)
+    KEY_UP = "ku"        # Key up event
+    TYPE = "t"           # Type text
+    MOUSE_MOVE = "m"     # Move mouse
+    LEFT_CLICK = "c"     # Click
+    RIGHT_CLICK = "rc"   # Right click
+    DOUBLE_CLICK = "dc"  # Double click
+    TRIPLE_CLICK = "tc"  # Triple click
+    DRAG_DOWN = "dd"     # Start drag
+    DRAG_MOVE = "dm"     # Continue drag
+    DRAG_UP = "du"      # End drag
+    WAIT = "w"          # Wait/pause
+    PRINT_POS = "p"     # Print position
+    COLOR_PRINT = "cp"  # Print color
 
+# Valid keys for key press (kp) command - only special keys
+VALID_KEYS = {
+    "arrow-down", "arrow-left", "arrow-right", "arrow-up",
+    "brightness-down", "brightness-up", "delete", "end",
+    "enter", "esc", "return", "space", "tab",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
+    "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16",
+    "fwd-delete", "home", "page-down", "page-up"
+}
+
+# Valid modifier keys for key down/up (kd/ku) commands
+MODIFIER_KEYS = {"alt", "cmd", "ctrl", "fn", "shift"}
 
 class Resolution(TypedDict):
     width: int
@@ -102,6 +119,51 @@ class ComputerTool(BaseAnthropicTool):
     _screenshot_delay = 1.0
     _scaling_enabled = True
 
+    # Common key combinations mapped to cliclick commands
+    KEY_COMBINATIONS = {
+        # Copy/Paste
+        "cmd+c": ["kd:cmd", "kp:c", "ku:cmd"],           # Copy
+        "cmd+v": ["kd:cmd", "kp:v", "ku:cmd"],           # Paste
+        "cmd+x": ["kd:cmd", "kp:x", "ku:cmd"],           # Cut
+        
+        # Undo/Redo
+        "cmd+z": ["kd:cmd", "kp:z", "ku:cmd"],           # Undo
+        "cmd+shift+z": ["kd:cmd,shift", "kp:z", "ku:cmd,shift"],  # Redo
+        
+        # Text Editing
+        "cmd+a": ["kd:cmd", "kp:a", "ku:cmd"],           # Select All
+        "cmd+f": ["kd:cmd", "kp:f", "ku:cmd"],           # Find
+        
+        # File Operations
+        "cmd+s": ["kd:cmd", "kp:s", "ku:cmd"],           # Save
+        "cmd+o": ["kd:cmd", "kp:o", "ku:cmd"],           # Open
+        "cmd+w": ["kd:cmd", "kp:w", "ku:cmd"],           # Close Window
+        "cmd+q": ["kd:cmd", "kp:q", "ku:cmd"],           # Quit App
+        
+        # App Management
+        "cmd+space": ["kd:cmd", "kp:space", "ku:cmd"],   # Spotlight
+        "cmd+tab": ["kd:cmd", "kp:tab", "ku:cmd"],       # Switch Apps
+        "cmd+m": ["kd:cmd", "kp:m", "ku:cmd"],           # Minimize
+        "cmd+h": ["kd:cmd", "kp:h", "ku:cmd"],           # Hide
+        
+        # Screenshots
+        "cmd+shift+3": ["kd:cmd,shift", "kp:3", "ku:cmd,shift"],  # Full Screenshot
+        "cmd+shift+4": ["kd:cmd,shift", "kp:4", "ku:cmd,shift"],  # Selection Screenshot
+        "cmd+shift+5": ["kd:cmd,shift", "kp:5", "ku:cmd,shift"],  # Screenshot Tools
+        
+        # Navigation
+        "cmd+left": ["kd:cmd", "kp:arrow-left", "ku:cmd"],        # Start of Line
+        "cmd+right": ["kd:cmd", "kp:arrow-right", "ku:cmd"],      # End of Line
+        "alt+left": ["kd:alt", "kp:arrow-left", "ku:alt"],        # Previous Word
+        "alt+right": ["kd:alt", "kp:arrow-right", "ku:alt"],      # Next Word
+        
+        # Text Selection
+        "cmd+shift+left": ["kd:cmd,shift", "kp:arrow-left", "ku:cmd,shift"],    # Select to Line Start
+        "cmd+shift+right": ["kd:cmd,shift", "kp:arrow-right", "ku:cmd,shift"],  # Select to Line End
+        "shift+left": ["kd:shift", "kp:arrow-left", "ku:shift"],                # Select Left
+        "shift+right": ["kd:shift", "kp:arrow-right", "ku:shift"],              # Select Right
+    }
+
     @property
     def options(self) -> ComputerToolOptions:
         return {
@@ -122,7 +184,7 @@ class ComputerTool(BaseAnthropicTool):
         self.display_num = None
 
         if IS_CODESPACE:
-            print("Running in codespace environment - some features may be limited")
+            logger.warning("Running in codespace environment - some features may be limited")
 
     async def __call__(
         self,
@@ -132,77 +194,71 @@ class ComputerTool(BaseAnthropicTool):
         coordinate: tuple[int, int] | None = None,
         **kwargs,
     ):
-        print("Action: ", action, text, coordinate)
+        logger.debug(
+            "",
+            extra={
+                'event_type': 'TOOL_USE',
+                'sender': 'computer',
+                'tool_name': 'computer',
+                'command': f"action={action} text={text} coordinate={coordinate}"
+            }
+        )
 
         if IS_CODESPACE:
             return ToolResult(
-                error="This action is not supported in codespace environment. This tool is designed for macOS systems."
+                error="This action is not supported in codespace environment."
             )
 
-        if action in ("mouse_move", "left_click_drag"):
-            if coordinate is None:
-                raise ToolError(f"coordinate is required for {action}")
-            if text is not None:
-                raise ToolError(f"text is not accepted for {action}")
-            if not isinstance(coordinate, list) or len(coordinate) != 2:
-                raise ToolError(f"{coordinate} must be a tuple of length 2")
-            if not all(isinstance(i, int) and i >= 0 for i in coordinate):
-                raise ToolError(f"{coordinate} must be a tuple of non-negative ints")
-
-            x, y = self.scale_coordinates(
-                ScalingSource.API, coordinate[0], coordinate[1]
-            )
-
-            if action == "mouse_move":
-                return await self.shell(f"cliclick m:{x},{y}")
-            elif action == "left_click_drag":
-                return await self.shell(f"cliclick dd:{x},{y}")
-
-        if action in ("key", "type"):
-            if text is None:
-                raise ToolError(f"text is required for {action}")
-            if coordinate is not None:
-                raise ToolError(f"coordinate is not accepted for {action}")
-            if not isinstance(text, str):
-                raise ToolError("Text input must be a string")
-
+        try:
             if action == "key":
-                # Use cliclick for key presses
-                key_map = {
-                    "Return": "kp:return",
-                    "space": "kp:space",
-                    "Tab": "kp:tab",
-                    "Left": "kp:arrow-left",
-                    "Right": "kp:arrow-right",
-                    "Up": "kp:arrow-up",
-                    "Down": "kp:arrow-down",
-                    "Escape": "kp:esc",
-                    "command": "kp:cmd",
-                    "cmd": "kp:cmd",
-                    "alt": "kp:alt",
-                    "shift": "kp:shift",
-                    "ctrl": "kp:ctrl",
-                }
-
-                try:
-                    if "+" in text:
-                        # Handle combinations like "ctrl+c"
-                        keys = text.split("+")
-                        mapped_keys = [
-                            key_map.get(k.strip(), f"kp:{k.strip()}") for k in keys
-                        ]
-                        cmd = "cliclick " + " ".join(mapped_keys)
+                if not text:
+                    raise ToolError("Text required for key action")
+                
+                # Convert to lowercase for consistency
+                text = text.lower()
+                
+                # Handle key combinations
+                if "+" in text:
+                    keys = text.split("+")
+                    cmd_parts = []
+                    
+                    # Handle modifier keys
+                    modifiers = [k for k in keys[:-1] if k in MODIFIER_KEYS]
+                    if modifiers:
+                        cmd_parts.append(f"kd:{','.join(modifiers)}")
+                    
+                    # Handle the main key
+                    main_key = keys[-1]
+                    if main_key in VALID_KEYS:
+                        # Use kp: for special keys
+                        cmd_parts.append(f"kp:{main_key}")
                     else:
-                        # Handle single keys
-                        mapped_key = key_map.get(text, f"kp:{text}")
-                        cmd = f"cliclick {mapped_key}"
-
-                    return await self.shell(cmd)
-
-                except Exception as e:
-                    return ToolResult(error=str(e))
+                        # Use t: for regular characters
+                        cmd_parts.append(f"t:{main_key}")
+                    
+                    # Release modifier keys
+                    if modifiers:
+                        cmd_parts.append(f"ku:{','.join(modifiers)}")
+                    
+                    # Execute commands in sequence
+                    results = []
+                    for cmd in cmd_parts:
+                        results.append(await self.shell(f"cliclick {cmd}"))
+                    return ToolResult(
+                        output="\n".join(r.output for r in results if r.output),
+                        error="\n".join(r.error for r in results if r.error)
+                    )
+                
+                # Handle single keys
+                if text in VALID_KEYS:
+                    return await self.shell(f"cliclick kp:{text}")
+                else:
+                    # Use t: for typing single characters
+                    return await self.shell(f"cliclick t:{text}")
 
             elif action == "type":
+                if not text:
+                    raise ToolError("Text required for type action")
                 results: list[ToolResult] = []
                 for chunk in chunks(text, TYPING_GROUP_SIZE):
                     cmd = f"cliclick w:{TYPING_DELAY_MS} t:{shlex.quote(chunk)}"
@@ -214,41 +270,29 @@ class ComputerTool(BaseAnthropicTool):
                     base64_image=screenshot_base64,
                 )
 
-        if action in (
-            "left_click",
-            "right_click",
-            "double_click",
-            "middle_click",
-            "screenshot",
-            "cursor_position",
-        ):
-            if text is not None:
-                raise ToolError(f"text is not accepted for {action}")
-            if coordinate is not None:
-                raise ToolError(f"coordinate is not accepted for {action}")
+            elif action in ("mouse_move", "left_click", "right_click", "double_click"):
+                if not coordinate:
+                    raise ToolError(f"Coordinates required for {action}")
+                
+                x, y = self.scale_coordinates(ScalingSource.API, coordinate[0], coordinate[1])
+                
+                cmd_map = {
+                    "mouse_move": "m",
+                    "left_click": "c",
+                    "right_click": "rc",
+                    "double_click": "dc"
+                }
+                
+                return await self.shell(f"cliclick {cmd_map[action]}:{x},{y}")
 
-            if action == "screenshot":
+            elif action == "screenshot":
                 return await self.screenshot()
-            elif action == "cursor_position":
-                result = await self.shell(
-                    "cliclick p",
-                    take_screenshot=False,
-                )
-                if result.output:
-                    x, y = map(int, result.output.strip().split(","))
-                    x, y = self.scale_coordinates(ScalingSource.COMPUTER, x, y)
-                    return result.replace(output=f"X={x},Y={y}")
-                return result
-            else:
-                click_cmd = {
-                    "left_click": "c:.",
-                    "right_click": "rc:.",
-                    "middle_click": "mc:.",
-                    "double_click": "dc:.",
-                }[action]
-                return await self.shell(f"cliclick {click_cmd}")
 
-        raise ToolError(f"Invalid action: {action}")
+            else:
+                raise ToolError(f"Invalid action: {action}")
+
+        except Exception as e:
+            return ToolResult(error=str(e))
 
     async def screenshot(self):
         """Take a screenshot of the current screen and return the base64 encoded image."""

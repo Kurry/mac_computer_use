@@ -5,6 +5,8 @@ from typing import ClassVar, Literal
 from anthropic.types.beta import BetaToolBash20241022Param
 
 from .base import BaseAnthropicTool, CLIResult, ToolError, ToolResult
+from .run import run
+from logger import logger
 
 
 class _BashSession:
@@ -113,6 +115,9 @@ class BashTool(BaseAnthropicTool):
     name: ClassVar[Literal["bash"]] = "bash"
     api_type: ClassVar[Literal["bash_20241022"]] = "bash_20241022"
 
+    DEFAULT_TIMEOUT = 30.0  # Reduce from 120s to 30s
+    MAX_RETRIES = 3
+
     def __init__(self):
         self._session = None
         super().__init__()
@@ -142,3 +147,71 @@ class BashTool(BaseAnthropicTool):
             "type": self.api_type,
             "name": self.name,
         }
+
+    async def run(self, command: str):
+        """Run a bash command and return the output"""
+        
+        logger.debug(
+            "",
+            extra={
+                'event_type': 'TOOL_USE',
+                'sender': 'bash',
+                'tool_name': 'bash',
+                'command': command
+            }
+        )
+
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                # Run command with timeout
+                _, stdout, stderr = await asyncio.wait_for(
+                    run(command),
+                    timeout=self.DEFAULT_TIMEOUT
+                )
+                
+                # Log success
+                logger.debug(
+                    "",
+                    extra={
+                        'event_type': 'TOOL_RESULT',
+                        'sender': 'bash',
+                        'result_type': 'success',
+                        'output': stdout if stdout else stderr
+                    }
+                )
+                
+                return ToolResult(output=stdout, error=stderr)
+
+            except asyncio.TimeoutError:
+                error_msg = f"Command timed out after {self.DEFAULT_TIMEOUT}s (attempt {attempt + 1}/{self.MAX_RETRIES})"
+                logger.warning(error_msg)
+                
+                if attempt == self.MAX_RETRIES - 1:
+                    # Log final failure
+                    logger.error(
+                        "",
+                        extra={
+                            'event_type': 'TOOL_RESULT', 
+                            'sender': 'bash',
+                            'result_type': 'error',
+                            'error': error_msg
+                        }
+                    )
+                    return ToolResult(error=error_msg)
+                    
+                # Kill any hanging processes before retry
+                await run("pkill -f " + command.split()[0])
+                await asyncio.sleep(1)  # Brief pause between retries
+                
+            except Exception as e:
+                error_msg = f"Command failed: {str(e)}"
+                logger.error(
+                    "",
+                    extra={
+                        'event_type': 'TOOL_RESULT',
+                        'sender': 'bash',
+                        'result_type': 'error',
+                        'error': error_msg
+                    }
+                )
+                return ToolResult(error=error_msg)
